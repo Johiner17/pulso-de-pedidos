@@ -1,0 +1,230 @@
+services:
+  postgres:
+    image: postgres:16.16-alpine
+    container_name: pulso-postgres
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=5
+      - -c
+      - max_wal_senders=5
+    environment:
+      POSTGRES_DB: orders_source
+      POSTGRES_USER: orders_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_only_change_me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: 384m
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: pulso-kafka
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  connect:
+    image: quay.io/debezium/connect:3.7.1.Final
+    container_name: pulso-connect
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      REST_ADVERTISED_HOST_NAME: connect
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    mem_limit: 768m
+    restart: unless-stopped
+
+  demo-generator:
+    image: postgres:16.16-alpine
+    container_name: pulso-demo-generator
+    profiles: ["demo"]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: orders_source
+      PGUSER: orders_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD:-local_only_change_me}
+      DEMO_INTERVAL_SECONDS: ${DEMO_INTERVAL_SECONDS:-5}
+      DEMO_DELETE_EVERY: ${DEMO_DELETE_EVERY:-3}
+    volumes:
+      - ./src/demo:/opt/demo:ro
+    entrypoint: ["/bin/sh", "/opt/demo/generate_orders.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: "no"
+
+  spark:
+    image: apache/spark:4.2.0-python3
+    container_name: pulso-spark
+    profiles: ["processor"]
+    entrypoint: ["/bin/sh", "/opt/app/run_spark.sh"]
+    command:
+      - --master
+      - local[1]
+      - --driver-memory
+      - 768m
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0,io.delta:delta-spark_4.2_2.13:4.4.1
+      - --conf
+      - spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+      - --conf
+      - spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+      - --conf
+      - spark.sql.shuffle.partitions=1
+      - --conf
+      - spark.sql.session.timeZone=UTC
+      - /opt/app/process_orders.py
+    environment:
+      SPARK_IVY_DIR: /tmp/ivy-cache
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: orders.public.orders
+      BRONZE_PATH: /opt/data/bronze/orders_cdc
+      SILVER_PATH: /opt/data/silver/orders_current
+      GOLD_PATH: /opt/data/gold/orders_by_status
+      DLQ_PATH: /opt/data/quarantine/orders_cdc
+      METRICS_PATH: /opt/data/observability/batch_metrics
+      CHECKPOINT_PATH: /opt/checkpoints/orders_stream
+    volumes:
+      - ./src/spark:/opt/app:ro
+      - ./data:/opt/data
+      - ./checkpoints:/opt/checkpoints
+      - ./.cache/ivy:/tmp/ivy-cache
+    depends_on:
+      connect:
+        condition: service_started
+    mem_limit: 1400m
+    restart: "no"
+
+  spark-report:
+    image: apache/spark:4.2.0-python3
+    container_name: pulso-spark-report
+    profiles: ["processor"]
+    entrypoint: ["/bin/sh", "/opt/app/run_spark.sh"]
+    command:
+      - --master
+      - local[1]
+      - --driver-memory
+      - 512m
+      - --packages
+      - io.delta:delta-spark_4.2_2.13:4.4.1
+      - --conf
+      - spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+      - --conf
+      - spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+      - --conf
+      - spark.sql.shuffle.partitions=1
+      - /opt/app/report_orders.py
+    environment:
+      SPARK_IVY_DIR: /tmp/ivy-cache
+      SILVER_PATH: /opt/data/silver/orders_current
+      GOLD_PATH: /opt/data/gold/orders_by_status
+      METRICS_PATH: /opt/data/observability/batch_metrics
+      DLQ_PATH: /opt/data/quarantine/orders_cdc
+    volumes:
+      - ./src/spark:/opt/app:ro
+      - ./data:/opt/data:ro
+      - ./.cache/ivy:/tmp/ivy-cache
+    mem_limit: 1200m
+    restart: "no"
+
+  aws-emulator:
+    build:
+      context: ./aws-emulator
+      args:
+        AWS_EMULATOR_VERSION: ${AWS_EMULATOR_VERSION:-1.0.513}
+    image: pulso-aws-emulator:local
+    container_name: pulso-aws-emulator
+    profiles: ["aws-emulator"]
+    command: ["-p", "9297", "--telemetry", "off"]
+    environment:
+      EMULATOR_TELEMETRY: "off"
+    ports:
+      - "127.0.0.1:9297:9297"
+    volumes:
+      - ./.aws-emulator:/home/emulator/.aws/emulator
+    mem_limit: 2g
+    restart: "no"
+
+  aws-s3-smoke:
+    build: ./aws-emulator/smoke
+    image: pulso-aws-s3-smoke:local
+    container_name: pulso-aws-s3-smoke
+    profiles: ["aws-emulator"]
+    network_mode: "service:aws-emulator"
+    environment:
+      AWS_ENDPOINT_URL: https://127.0.0.1:9297
+      AWS_SHARED_CREDENTIALS_FILE: /home/emulator/.aws/emulator/9297/emulator_credentials
+      AWS_CONFIG_FILE: /home/emulator/.aws/emulator/9297/config
+      AWS_CA_BUNDLE: /home/emulator/.aws/emulator/9297/ca.pem
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_DISABLE_HOST_PREFIX_INJECTION: "true"
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./.aws-emulator:/home/emulator/.aws/emulator:ro
+    depends_on:
+      aws-emulator:
+        condition: service_started
+    mem_limit: 256m
+    restart: "no"
+
+volumes:
+  postgres_data:
+    name: est_postgres_data
+  kafka_data:
+    name: est_kafka_data
