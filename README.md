@@ -33,7 +33,7 @@ flowchart LR
 - Apache Spark Structured Streaming: procesamiento de eventos en micro-lotes.
 - Delta Lake: tablas transaccionales locales para historial, estado actual y métricas.
 - Docker Compose: entorno reproducible para desarrollo local.
-- AWS Emulator (etapa opcional): pruebas locales de APIs AWS compatibles, aisladas del pipeline central.
+- AWS Emulator: prueba local de S3 con Boto3 implementada y verificada; es opcional e independiente del pipeline principal.
 
 ## Estado
 
