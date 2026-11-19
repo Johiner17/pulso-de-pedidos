@@ -1,6 +1,22 @@
-# Pulso de pedidos
+<h1 align="center">Pulso de pedidos</h1>
 
-Pipeline de ingeniería de datos para capturar cambios de pedidos desde PostgreSQL, transportarlos como eventos CDC y procesarlos en streaming para producir datos analíticos actualizados.
+<p align="center">
+  Pipeline local de CDC y streaming: captura cambios en PostgreSQL, los procesa con Spark y los publica en tablas analíticas Delta.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/Debezium-F15A24?logo=debezium&logoColor=white" alt="Debezium">
+  <img src="https://img.shields.io/badge/Apache%20Kafka-231F20?logo=apachekafka&logoColor=white" alt="Apache Kafka">
+  <img src="https://img.shields.io/badge/Kafka%20Connect-231F20?logo=apachekafka&logoColor=white" alt="Kafka Connect">
+  <img src="https://img.shields.io/badge/Apache%20Spark-E25A1C?logo=apachespark&logoColor=white" alt="Apache Spark">
+  <img src="https://img.shields.io/badge/Delta%20Lake-00ADD4?logoColor=white" alt="Delta Lake">
+  <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/AWS%20Emulator%20(local)-232F3E?logo=amazonaws&logoColor=white" alt="AWS Emulator local">
+</p>
+
+> Proyecto de portafolio de ingeniería de datos. El pipeline principal funciona localmente; AWS Emulator se usa solo para una prueba S3 independiente.
 
 El pipeline principal se desarrolla **localmente y sin costos de nube**. AWS Emulator queda como una práctica local opcional de APIs: no reemplaza PostgreSQL, Kafka ni Spark, y no se presentará como una implementación desplegada en AWS. En Windows requiere construir una imagen Docker local; se documenta por separado y no es un prerrequisito para ejecutar el pipeline.
 
